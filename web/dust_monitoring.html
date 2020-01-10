@@ -1,0 +1,271 @@
+<html>
+    <head>
+  	    <!-- EXTERNAL LIBS-->
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css">
+        <script defer src="https://use.fontawesome.com/releases/v5.3.1/js/all.js"></script>
+        <script src="https://www.google.com/jsapi"></script>
+        <script src="https://sdk.amazonaws.com/js/aws-sdk-2.7.16.min.js"></script>
+        <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+
+	</head>
+	<body>
+		<section class="section">
+			<div class="container">
+				<center><H1 class="is-capitalized has-text-weight-bold is-size-1">PM2.5 monitoring</H1></center>
+				<div id="app" class="tile is-ancestor">
+					<div class="tile is-vertical is-12">
+						<div class="tile">
+							<div class="tile is-parent">
+								<article class="tile is-child notification">
+									<p class="subtitle">Dust Sensor List</p>
+									<div class="table-container">
+										<table class="table is-bordered is-striped is-narrow is-hoverable is-fullwidth">
+											<thead>
+												<tr>
+													<th>Sensor ID</th>
+													<th>Location</th>
+													<th>PM2.5 (มคก./ลบ.ม)</th>
+													<th>Status</th>
+													<th>Show Graph</th>
+												</tr>
+											</thead>
+											<tbody>
+												<tr v-for="sensor in sensors">
+													<td>{{ sensor.DustSensorID }}</td>
+													<td>{{ sensor.location }}</td>
+													<td>{{ sensor["PM2.5_avg"] }}</td>
+													<td>{{ sensor.status }}</td>
+													<td>
+														<button v-if="isShowGraph(sensor.DustSensorID)" @click="toggleShow(sensor.DustSensorID)">Hide</button>
+														<button v-else @click="toggleShow(sensor.DustSensorID)">Show</button>
+													</td>
+												</tr>
+											</tbody>
+										</table>
+									</div>
+								</article>
+							</div>
+							<div class="tile is-parent">
+								<article class="tile is-child notification">
+									<p class="subtitle">Dust Sensor Location</p>
+									<div id="map_div" style="width: 500px; height: 300px;"></div>
+								</article>
+							</div>
+						</div>
+						<div class="tile is-parent">
+							<article class="tile is-child notification">
+								<p class="subtitle">Dust Sensor Graph</p>
+								<div class="content">
+									<div v-for="(val, key, index) in show_graphs" v-bind:id="key" v-show="val"></div>
+								</div>
+							</article>
+						</div>
+					</div>
+				</div>
+			</div>
+		</section>
+
+		<script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
+		<script>
+			function avg_value_by_id(data_group_by_id) {
+				let averages = [];
+				Object.keys(data_group_by_id).forEach(function (key) {
+					sum = data_group_by_id[key].reduce((a, b) => a + b, 0); 
+					averages.push(sum / data_group_by_id[key].length);
+				});
+				return averages;
+			}
+	
+			async function getData() {
+				AWS.config.update({
+					region: "ap-southeast-1",
+					endpoint: 'https://dynamodb.ap-southeast-1.amazonaws.com',
+						// accessKeyId default can be used while using the downloadable version of DynamoDB. 
+						// For security reasons, do not store AWS Credentials in your files. Use Amazon Cognito instead.
+					accessKeyId: "YOUR_ACCESS_KEY_ID",
+						// secretAccessKey default can be used while using the downloadable version of DynamoDB. 
+						// For security reasons, do not store AWS Credentials in your files. Use Amazon Cognito instead.
+					secretAccessKey: "YOUR_SECRET_ACCESS_KEY"
+				});  
+					
+				var docClient = new AWS.DynamoDB.DocumentClient();
+			
+				var params = {
+					TableName : "DustSensorTable",
+					FilterExpression: 'contains (DustSensorID, :id)',
+					ExpressionAttributeValues: {
+						":id": "DustSensor"
+					}
+				};
+		
+				// convert timestamp to datatime
+				function cDateTime(dtime) {
+					var date = new Date(dtime);
+					return ('0' + (date.getMonth() + 1)).slice(-2) + 
+						'/' + ('0' + date.getDate()).slice(-2)  + 
+						'/' + date.getFullYear() + 
+						' ' + ('0' + date.getHours()).slice(-2) + 
+						':' + ('0' + date.getMinutes()).slice(-2)
+				}
+
+				let data = await docClient.scan(params).promise();
+				let promise = new Promise((resolve, reject) => {
+					let dataitems = [];
+					let avg_pm2_5_by_id = [];
+					let data_group_by_id = {}; 
+					for (var i=0; i < data.Items.length; i++) {  
+						dataitems.push({"Time":cDateTime(Number(data.Items[i].TimeStamp)).toString(),
+						"DustSensorID":data.Items[i].payload.DustSensorID,
+						"PM1.0":Number(data.Items[i].payload["PM1.0"]).toString(),
+						"PM10.0":Number(data.Items[i].payload["PM10.0"]).toString(),
+						"PM2.5":Number(data.Items[i].payload["PM2.5"]).toString()});
+	
+						var dustSensorID = data.Items[i].payload.DustSensorID;
+						if (dustSensorID in data_group_by_id) {
+							data_group_by_id[dustSensorID].push(Number(data.Items[i].payload["PM2.5"]));
+						} else {
+							data_group_by_id[dustSensorID] = [Number(data.Items[i].payload["PM2.5"])];
+						}	
+					}
+					console.log(data_group_by_id);
+					console.log(JSON.stringify(data_group_by_id));
+					avg_pm2_5_by_id = avg_value_by_id(data_group_by_id);
+					console.log(avg_pm2_5_by_id);
+					console.log(JSON.stringify(avg_pm2_5_by_id));
+					console.log(JSON.stringify(dataitems));
+	
+					resolve([dataitems, avg_pm2_5_by_id])
+                });
+
+				return promise;
+			}
+	
+			async function drawChart() {
+				let [dataitems, avg_pm2_5_by_id] = await getData();
+	
+				// draw map
+				let map = new google.visualization.GeoChart(document.getElementById('map_div'));
+				let datamap = google.visualization.arrayToDataTable([
+					['City', 'PM2.5'],
+					['Bangkok', avg_pm2_5_by_id[0]],
+					['Chonburi',  avg_pm2_5_by_id[1]]
+				]);
+	
+				let mapOptions = {
+					region: 'TH',
+					displayMode: 'markers',
+					colorAxis: {colors: ['orange', 'red']}
+				};
+	
+				map.draw(datamap, mapOptions);
+
+				// draw line chart
+				let datatable1 = new google.visualization.DataTable();
+                datatable1.addColumn('datetime', 'Time');
+                datatable1.addColumn('number', 'PM1.0');
+                datatable1.addColumn('number', 'PM10.0');
+                datatable1.addColumn('number', 'PM2.5');
+
+                let datatable2 = new google.visualization.DataTable();
+                datatable2.addColumn('datetime', 'Time');
+                datatable2.addColumn('number', 'PM1.0');
+                datatable2.addColumn('number', 'PM10.0');
+                datatable2.addColumn('number', 'PM2.5');
+
+                $.each(dataitems, function (j, row) {
+                    if (row.DustSensorID == "DustSensor001") {
+                        datatable1.addRow([
+                            (new Date(row.Time)),
+                            parseFloat(row["PM1.0"]),
+                            parseFloat(row["PM10.0"]),
+                            parseFloat(row["PM2.5"])
+                        ]);
+                    } else if (row.DustSensorID == "DustSensor002") {
+                        datatable2.addRow([
+                            (new Date(row.Time)),
+                            parseFloat(row["PM1.0"]),
+                            parseFloat(row["PM10.0"]),
+                            parseFloat(row["PM2.5"])
+                        ]);
+                    }
+				});
+				
+				let graph_width = 1200;
+				let graph_height = 300;
+
+                var options1 = {
+					title: 'PM2.5, PM1.0 and PM10.0 of DustSensor001',
+					curveType: 'function',
+                    legend: { position: 'right' },
+                    width: graph_width,
+                    height: graph_height
+				};
+
+				var chart1 = new google.visualization.LineChart(document.getElementById('DustSensor001'));
+                chart1.draw(datatable1, options1);
+
+                var options2 = {
+					title: 'PM2.5, PM1.0 and PM10.0 of DustSensor002',
+					curveType: 'function',
+                    legend: { position: 'right' },
+                    width: graph_width,
+                    height: graph_height
+				};
+
+				var chart2 = new google.visualization.LineChart(document.getElementById('DustSensor002'));
+				chart2.draw(datatable2, options2);
+			}
+	
+			google.charts.load('current', {
+				'packages': ['geochart', 'corechart'],
+				// Note: you will need to get a mapsApiKey for your project.
+				// See: https://developers.google.com/chart/interactive/docs/basic_load_libs#load-settings
+				'mapsApiKey': 'YOUR_MAPS_API_KEY'
+			});
+			google.charts.setOnLoadCallback(drawChart);
+
+			// vue app
+			Vue.directive('visible', (el, bind) => {
+				el.style.visibility=(!!bind.value) ? 'visible' : 'hidden';});
+				
+            var app = new Vue({
+                el: '#app',
+                data: {
+                    message: 'Hello Vue!',
+                    sensors: [	
+                        {
+                            "DustSensorID": "DustSensor001",
+                            "PM2.5_avg": 126.538,
+                            "status": "มีผลกระทบกับสุขภาพ",
+                            "location": "Bangkok"
+                        },
+                        {
+                            "DustSensorID": "DustSensor002",
+                            "PM2.5_avg": 58.333,
+                            "status": "เริ่มมีผลกระทบกับสุขภาพ",
+                            "location": "Chonburi"
+                        }
+                    ],
+                    show_graphs: {
+                        DustSensor001: true,
+                        DustSensor002: false
+                    }
+                },
+                methods: {
+                    toggleShow(sensor_id) {
+                        if (this.show_graphs[sensor_id]) {
+                            this.show_graphs[sensor_id] = false
+                        } else {
+                            this.show_graphs[sensor_id] = true
+                        }
+                        console.log(this.show_graphs[sensor_id])
+					},
+					isShowGraph(sensor_id) {
+						return this.show_graphs[sensor_id]
+					}
+                }
+            })
+		</script>
+	</body>
+</html>
